@@ -1,0 +1,11 @@
+# 这是linux应用开发C语言的.gitignore文件
+build/
+.vscode/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.log
+*.bak
+vendor/
+logs/
