@@ -22,12 +22,78 @@
 #define QOS 1
 #define TIMEOUT 10000L
 
-// 认证信息 - 在实际项目中应该从配置文件或安全存储中读取    
+static const char *default_sub_topics[] = {
+    "/gw/cmd/#",
+    "/gw/config/reload",
+    "/gw/upgrade/#",
+};
+
+static MQTTAsync g_client;
+static pthread_t g_pub_thread;
+static msg_bus_t *g_tx_bus;
+static msg_bus_t *g_rx_bus;
+static mqtt_config_t g_mqtt_cfg = {
+    .sub_topics = (char **)default_sub_topics,
+    .sub_count = sizeof(default_sub_topics) / sizeof(default_sub_topics[0]),
+
+};
+
+// 认证信息 - 在实际项目中应该从配置文件或安全存储中读取
 // #define MQTT_USERNAME "weiqing"
 // #define MQTT_PASSWORD "1234"
+volatile MQTTClient_deliveryToken deliveredtoken;
+static void _mqtt_subscribe_all()
+{
+    int rc;
+    for (int i = 0; i < g_mqtt_cfg.sub_count; i++)
+    {
+        const char *topic = g_mqtt_cfg.sub_topics[i];
+        rc = MQTTAsync_subscribe(g_client, topic, 1, NULL);
+        if (rc != MQTTASYNC_SUCCESS)
+        {
+            printf("订阅失败:%s, rc=%d\n", topic, rc);
+        }
+        else
+        {
+            printf("订阅成功:%s\n", topic);
+        }
+    }
+}
+static void delivered(void *context, MQTTClient_deliveryToken dt)
+{
+    printf("Message with token value %d delivery confirmed\n", dt);
+    deliveredtoken = dt;
+}
+
+static int msgarrvd(void *context, char *topicName, int topicLen, MQTTAsync_message *message)
+{
+    // TODO: 这里怎么搞? 放进消息队列里面吗?
+    // 过滤topic是 /gw/cmd/{dev} 的消息
+    msg_t msg;
+    snprintf(msg.topic, sizeof(msg.topic), "%s", topicName);
+    snprintf(msg.payload, sizeof(msg.payload), "%s", (char *)message->payload);
+    bus_push(g_rx_bus, &msg);
+#if 0
+    printf("Message arrived\n");
+    printf("     topic: %s\n", topicName);
+    printf("   message: %.*s\n", message->payloadlen, (char *)message->payload);
+#endif
+    MQTTAsync_freeMessage(&message);
+    MQTTAsync_free(topicName);
+    // MQTTClient_freeMessage(&message);
+    // MQTTClient_free(topicName);
+    return 1;
+}
+
+static void connlost(void *context, char *cause)
+{
+    printf("\nConnection lost\n");
+    printf("     cause: %s\n", cause);
+}
 
 static void publish(MQTTAsync client, char *topic, char *payload)
 {
+    // TODO: 从消息总线上面摘一个下来发送出去 到 mqtt服务器上面去
     MQTTAsync_message pubmsg = MQTTAsync_message_initializer;
 
     pubmsg.payload = payload;
@@ -37,7 +103,7 @@ static void publish(MQTTAsync client, char *topic, char *payload)
 
     // 异步发布
     MQTTAsync_sendMessage(client, TOPIC, &pubmsg, NULL);
-    printf("📤 消息已发送: %s\n", payload);
+    // printf("📤 消息已发送: %s\n", payload);
 }
 
 void onSubscribeSuccess(void *context, MQTTAsync_successData *response)
@@ -50,28 +116,6 @@ void onSubscribeFailure(void *context, MQTTAsync_failureData *response)
     // finished = 1;
 }
 
-static void onConnectSuccess(void *context, MQTTAsync_successData *response)
-{
-    MQTTAsync client = (MQTTAsync)context;
-    MQTTAsync_responseOptions opts = MQTTAsync_responseOptions_initializer;
-    int rc;
-
-    printf("Connect succeeded\n");
-
-    // 连接成功后订阅主题
-    opts.onSuccess = onSubscribeSuccess;
-    opts.onFailure = onSubscribeFailure;
-    opts.context = client;
-
-    rc = MQTTAsync_subscribe(client, TOPIC, QOS, &opts);
-    if (rc != MQTTASYNC_SUCCESS)
-    {
-        printf("Failed to start subscribe, return code %d\n", rc);
-        // finished = 1;
-    }
-    printf("✅ 连接成功，准备发布消息...\n");
-}
-
 // 连接失败回调
 static void onConnectFailure(void *context, MQTTAsync_failureData *response)
 {
@@ -79,58 +123,70 @@ static void onConnectFailure(void *context, MQTTAsync_failureData *response)
     assert(0);
 }
 
-// 1. 消息到达回调（核心接收函数）
-int messageArrived(void *context, char *topicName, int topicLen, MQTTAsync_message *message)
+static void onConnectSuccess(void *context, MQTTAsync_successData *response)
 {
-    printf("Message arrived\n");
-    printf("  Topic: %s\n", topicName);
-    printf("  Payload: %.*s\n", message->payloadlen, (char *)message->payload);
-    printf("  QoS: %d\n", message->qos);
-
-    // 必须释放消息内存
-    MQTTAsync_freeMessage(&message);
-    MQTTAsync_free(topicName);
-
-    return 1; // 返回1表示消息已处理
+    printf("✅ 连接成功，开始订阅配置中的主题...\n");
+    _mqtt_subscribe_all();
 }
-
 int mqtt_client_test(void)
 {
     MQTTAsync client;
     MQTTAsync_connectOptions conn_opts = MQTTAsync_connectOptions_initializer;
-
+    int rc;
     // 1. 创建客户端
-    int rc = MQTTAsync_create(&client, SERVER_ADDRESS, CLIENT_ID,
-                              MQTTCLIENT_PERSISTENCE_NONE, NULL);
+    rc = MQTTAsync_create(&client, SERVER_ADDRESS, CLIENT_ID,
+                          MQTTCLIENT_PERSISTENCE_NONE, NULL);
     if (rc != MQTTASYNC_SUCCESS)
     {
         printf("Failed to create client\n");
         return 1;
     }
+    // 配置回调
+    rc = MQTTAsync_setCallbacks(client, NULL, connlost, msgarrvd, delivered);
+    if (rc != MQTTASYNC_SUCCESS)
+    {
+        printf("Failed to set callbacks, return code %d\n", rc);
+        goto destroy_exit;
+    }
 
     // 2. 配置连接参数
     conn_opts.keepAliveInterval = 20;
     conn_opts.cleansession = 1;
+    // 下面非必需
     conn_opts.onSuccess = onConnectSuccess;
     conn_opts.onFailure = onConnectFailure;
     conn_opts.context = client;
     // conn_opts.username = MQTT_USERNAME;
     // conn_opts.password = MQTT_PASSWORD;
-    MQTTAsync_setCallbacks(client, client, NULL, messageArrived, NULL);
+
     // 3. 发起异步连接
     printf("正在连接MQTT Broker: %s\n", SERVER_ADDRESS);
     rc = MQTTAsync_connect(client, &conn_opts);
     if (rc != MQTTASYNC_SUCCESS)
     {
-        printf("Failed to start connect\n");
-        MQTTAsync_destroy(&client);
-        return 1;
+        printf("Failed to start connect, %d\n", rc);
+        goto destroy_exit;
     }
 
-    // 4. 保持程序运行，等待回调执行
-    printf("等待连接建立...\n");
-    // sleep(5);
+    // 订阅
+    // 一直订阅直到成功?
 
+    printf("订阅 主题: %s\n client_id:%s Qos%d\n\n", TOPIC, CLIENT_ID, QOS);
+    for (rc = -1; rc != MQTTASYNC_SUCCESS;)
+    {
+        rc = MQTTAsync_subscribe(client, TOPIC, QOS, NULL);
+        if (rc != MQTTASYNC_SUCCESS)
+        {
+            printf("订阅主题失败:%d\n", rc);
+            sleep(1);
+        }
+
+        else
+            printf("订阅成功!\n");
+    }
+    // end 订阅
+
+    // 发布
     char payload[64];
     for (double i = 25.6;; i = i + 0.5)
     {
@@ -139,9 +195,91 @@ int mqtt_client_test(void)
         publish(client, TOPIC, payload);
     }
 
-    // 5. 断开连接
-    MQTTAsync_disconnect(client, NULL);
-    MQTTAsync_destroy(&client);
+    // end 发布
+    //  5. 断开连接
+    rc = MQTTAsync_disconnect(client, NULL);
+    if (rc != MQTTASYNC_SUCCESS)
+    {
+        printf("断开连接失败:%d\n", rc);
+    }
 
+destroy_exit:
+    MQTTAsync_destroy(&client);
+exit:
+
+    return rc;
+}
+
+// 发送到云端
+static void *_mqtt_publish_worker_thread(void *arg)
+{
+    msg_t msg;
+    for (;;)
+    {
+        // 阻塞等待
+        if (bus_pop(g_tx_bus, &msg) != 0)
+            continue;
+        // TODO: 发送MQTT 消息
+        MQTTAsync_message pubmsg = MQTTAsync_message_initializer;
+        pubmsg.payload = msg.payload;
+        pubmsg.payloadlen = strlen(msg.payload);
+        pubmsg.qos = QOS;
+        pubmsg.retained = 0;
+
+        MQTTAsync_sendMessage(g_client, msg.topic, &pubmsg, NULL);
+    }
+}
+
+// 从云端接收
+
+int mqtt_init(msg_bus_t *tx_bus, msg_bus_t *rx_bus)
+{
+    g_tx_bus = tx_bus;
+    g_rx_bus = rx_bus;
     return 0;
+}
+int mqtt_start(void)
+{
+    int rc;
+    MQTTAsync_connectOptions conn_opts = MQTTAsync_connectOptions_initializer;
+
+    // 1. 创建客户端
+    rc = MQTTAsync_create(&g_client, SERVER_ADDRESS, CLIENT_ID,
+                          MQTTCLIENT_PERSISTENCE_NONE, NULL);
+    if (rc != MQTTASYNC_SUCCESS)
+    {
+        printf("Failed to create client\n");
+        return -1;
+    }
+    // 配置回调
+    rc = MQTTAsync_setCallbacks(g_client, NULL, connlost, msgarrvd, delivered);
+    if (rc != MQTTASYNC_SUCCESS)
+    {
+        printf("Failed to set callbacks, return code %d\n", rc);
+        return -2;
+    }
+
+    // 2. 配置连接参数
+    conn_opts.keepAliveInterval = 20;
+    conn_opts.cleansession = 1;
+    // 下面非必需
+    conn_opts.onSuccess = onConnectSuccess;
+    conn_opts.onFailure = onConnectFailure;
+    conn_opts.context = g_client;
+    // conn_opts.username = MQTT_USERNAME;
+    // conn_opts.password = MQTT_PASSWORD;
+
+    // 3. 发起异步连接
+    printf("正在连接MQTT Broker: %s\n", SERVER_ADDRESS);
+    rc = MQTTAsync_connect(g_client, &conn_opts);
+    if (rc != MQTTASYNC_SUCCESS)
+    {
+        printf("Failed to start connect, %d\n", rc);
+        return -3;
+    }
+
+    // 启动发布线程
+    pthread_create(&g_pub_thread, NULL, _mqtt_publish_worker_thread, NULL);
+
+    // TODO: 订阅呢? 放在哪里?
 }
