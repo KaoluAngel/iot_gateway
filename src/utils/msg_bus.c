@@ -8,16 +8,16 @@ int bus_init(msg_bus_t *bus)
     // TODO: 不负责分配内存
 
     if (!bus)
-        return NULL;
+        return -1;
     memset(bus, 0, sizeof(msg_bus_t));
     pthread_mutex_init(&bus->lock, NULL);
-    pthread_cond_init(&bus->lock, NULL);
+    pthread_cond_init(&bus->cond, NULL);
 
     bus->head = 0;
     bus->tail = 0;
     bus->is_running = MSG_BUS_STATUS_RUNNING;
 
-    return bus;
+    return 0;
 }
 void bus_deinit(msg_bus_t *bus)
 {
