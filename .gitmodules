@@ -4,3 +4,6 @@
 [submodule "vendor/cjson"]
 	path = vendor/cjson
 	url = https://github.com/DaveGamble/cJSON.git
+[submodule "vendor/libmodbus"]
+	path = vendor/libmodbus
+	url = https://github.com/stephane/libmodbus
