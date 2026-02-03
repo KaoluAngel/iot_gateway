@@ -8,7 +8,7 @@
             "name": "CMake Debug",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/iot_gateway",
+            "program": "${workspaceFolder}/build/cloud_client/cloud_client",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",

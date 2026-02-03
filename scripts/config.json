@@ -1,0 +1,24 @@
+{
+    "can_channels": [
+        {
+            "name": "can0",
+            "ids": [
+                {
+                    "id": "0x100",
+                    "cycle": 10,
+                    "signals": [
+                        { "name": "temperature", "type": "int16", "min": -20, "max": 120 },
+                        { "name": "voltage", "type": "uint16", "min": 0,   "max": 4800 }
+                    ]
+                },
+                {
+                    "id": "0x101",
+                    "cycle": 100,
+                    "signals": [
+                        { "name": "rpm", "type": "uint16", "min": 0, "max": 6000 }
+                    ]
+                }
+            ]
+        }
+    ]
+}

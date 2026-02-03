@@ -3,7 +3,8 @@
 #include "mqtt_client.h"
 #include "MQTTAsync.h"
 #include "MQTTClient.h"
-#
+#include "../utils/uds_bus.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -30,9 +31,9 @@ static const char *default_sub_topics[] = {
 
 static MQTTAsync g_client;
 static pthread_t g_pub_thread;
-static msg_bus_t *g_tx_bus;
-static msg_bus_t *g_rx_bus;
-static mqtt_config_t g_mqtt_cfg = {
+static uds_bus_t *g_tx_bus;
+static uds_bus_t *g_rx_bus;
+static mqtt_subscription_list_t g_mqtt_cfg = {
     .sub_topics = (char **)default_sub_topics,
     .sub_count = sizeof(default_sub_topics) / sizeof(default_sub_topics[0]),
 
@@ -69,10 +70,10 @@ static int msgarrvd(void *context, char *topicName, int topicLen, MQTTAsync_mess
 {
     // TODO: 这里怎么搞? 放进消息队列里面吗?
     // 过滤topic是 /gw/cmd/{dev} 的消息
-    msg_t msg;
+    uds_msg_t msg;
     snprintf(msg.topic, sizeof(msg.topic), "%s", topicName);
     snprintf(msg.payload, sizeof(msg.payload), "%s", (char *)message->payload);
-    bus_push(g_rx_bus, &msg);
+    uds_send(g_rx_bus, (uds_msg_t *)&msg);
 #if 0
     printf("Message arrived\n");
     printf("     topic: %s\n", topicName);
@@ -213,11 +214,11 @@ exit:
 // 发送到云端
 static void *_mqtt_publish_worker_thread(void *arg)
 {
-    msg_t msg;
+    uds_msg_t msg;
     for (;;)
     {
         // 阻塞等待
-        if (bus_pop(g_tx_bus, &msg) != 0)
+        if (uds_recv(g_tx_bus, &msg) != 0)
             continue;
         // TODO: 发送MQTT 消息
         MQTTAsync_message pubmsg = MQTTAsync_message_initializer;
@@ -232,7 +233,7 @@ static void *_mqtt_publish_worker_thread(void *arg)
 
 // 从云端接收
 
-int mqtt_init(msg_bus_t *tx_bus, msg_bus_t *rx_bus)
+int mqtt_init(uds_bus_t *tx_bus, uds_bus_t *rx_bus)
 {
     g_tx_bus = tx_bus;
     g_rx_bus = rx_bus;
